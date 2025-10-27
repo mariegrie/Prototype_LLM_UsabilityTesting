@@ -16,6 +16,19 @@ Repository for HICSS 2026 Paper: Towards Simulating User Behavior for Automating
 * Capturing Screenshot of every iteration
 * Writing results to files
 
+## Paper Results
+
+### Documentation RQ1
+* Outputs of both LLM calls and TestRunner
+* Covers results of the first set of tests (Section 6.2.1)
+* Focus on navigation skills (e.g. comparing it to the shortest click path and evaluate whether the task was completed successfully)
+
+### Documentation RQ2
+* Outputs both LLM calls and Testrunner
+* Covers results of the second set of tests (Section 6.2.2)
+* Navigation path and focus on 'thoughts and observations' to compare it to human-based usability test results
+  
+## Requirements
 
 ### GPT Requirements
 ```python
