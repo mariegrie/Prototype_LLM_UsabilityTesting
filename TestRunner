@@ -1,0 +1,306 @@
+import json
+from datetime import datetime
+import time
+import os
+from dotenv import load_dotenv
+import base64
+from tenacity import retry, stop_after_attempt, wait_random_exponential
+import tiktoken
+
+from bs4 import BeautifulSoup, Comment
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+from GPTInteraction import GPTInteraction
+from GPTFindElement import GPTFindElement
+
+class TestRunner:
+    def __init__(self):
+        self.driver = webdriver.Firefox()
+        self.gpt_interaction = GPTInteraction()
+        self.gpt_findelement = GPTFindElement()
+        self.wait = WebDriverWait(self.driver, 10)
+
+    def main(self, start_url, task):
+        self.usability_task = task
+
+        self.driver.get(start_url)
+        time.sleep(10)
+        self.take_screenshot(1)
+
+        max_iterations = 15
+        for counter in range(1, max_iterations):
+            print("Iteration: " + str(counter))
+
+            self.llm_caused_exception_handling(counter)
+
+            # Input for GPTInteraction LLM next iteration
+            self.gpt_interaction.save_history(
+                self.interaction_type,
+                self.interaction_label,
+                self.element_description,
+                self.field_input,
+            )
+            counter += 1
+
+            # Get screenshot after interaction
+            time.sleep(5)
+            self.take_screenshot(counter)
+
+            # Check if Task is finished (from LLM's output)
+            if "Y" in self.task_status:
+                break
+
+        self.driver.quit()
+
+    @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(6))
+    def llm_caused_exception_handling(self, counter):
+        (
+            self.element_options,
+            self.interaction_explanation,
+            self.interaction_type,
+            self.interaction_label,
+            self.element_description,
+            self.task_status,
+            self.field_input,
+            self.iteration_observation
+        ) = self.interaction_choice_llm()
+
+        # Write choices to file for documentation
+        self.write_choices_to_file(
+            self.element_options,
+            self.interaction_explanation,
+            self.interaction_type,
+            self.interaction_label,
+            self.element_description,
+            self.field_input,
+            self.iteration_observation,
+            counter,
+            self.task_status
+        )
+
+        # Prepare input of second LLM
+        html = self.driver.page_source
+        token = self.number_tokens(html)
+        print("Tokens HTML before:", token)
+        current_html_code = self.reduce_html_code(html)
+        reduced_token = self.number_tokens(current_html_code)
+        print("Tokens HTML after:", reduced_token)
+
+        # Output of first LLM as input for second LLM
+        last_gpt_interaction = (
+            self.interaction_type,
+            self.interaction_label,
+            self.element_description,
+            self.field_input,
+            self.iteration_observation
+        )
+
+        # Output FindElement LLM
+        (
+            explanation,
+            element_type,
+            element_label,
+            element_tag,
+            element_id,
+            element_css,
+            element_href,
+            element_class,
+            element
+        ) = self.get_element_locator_from_llm(current_html_code, last_gpt_interaction)
+
+        # Write FindElement LLM to file for documentation
+        self.write_found_elements_to_file(
+            counter,
+            element_type,
+            element_label,
+            element_tag,
+            element_id,
+            element_css,
+            element_href,
+            element_class,
+            element
+        )
+
+        # Perform Interaction
+        # Try block to catch wrong CSS selector output from FindElement LLM
+        if "2FA" not in element_type:
+            try:
+                element_locator_css = self.locate_element_with_css(element_css)
+                self.interact_with_element(self.interaction_type, self.field_input, element_locator_css)
+            except:
+                element_locator = self.locate_element_alternatives(element_id, element_href, element_class, element_label)
+                self.interact_with_element(self.interaction_type, self.field_input, element_locator)
+        else:
+            time.sleep(20)
+
+    def number_tokens(self, messages, model="gpt-4-turbo"):
+        encoding = tiktoken.encoding_for_model(model)
+        str_messages = str(messages)
+        encoded_message = encoding.encode(str_messages)
+        num_tokens = len(encoded_message)
+        return num_tokens
+
+    def reduce_html_code(self, html):
+        # Parse the HTML content with BeautifulSoup using lxml parser
+        soup = BeautifulSoup(html, 'lxml')
+        # Remove all comments from the HTML
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+        # Simplify whitespace in all text nodes
+        for element in soup.find_all(True):  # `find_all(True)` finds all tags
+            if element.string:
+                element.string.replace_with(' '.join(element.string.split()))
+        # Optionally remove irrelevant tags like <script>, <style>, <meta>
+        # for tag in soup(['script', 'style', 'meta']):
+        #     tag.decompose()
+        # Convert the modified soup object back to a string and return
+        return str(soup)
+
+    def locate_element_with_css(self, element_css):
+        print("Trying CSS locator: ", element_css)
+        self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, element_css)))
+        return self.driver.find_element(By.CSS_SELECTOR, element_css)
+
+    def locate_element_alternatives(self, element_id, element_href, element_class, element_label):
+        # Decision of locator type and element search
+        print("Trying alternative locator")
+        # Use ID to find element
+        if "no id" not in element_id:
+            self.wait.until(EC.presence_of_element_located((By.ID, element_id)))
+            element_locator = self.driver.find_element(By.ID, element_id)
+            print("Output locate element method: id:", element_locator)
+            return element_locator
+
+        # Use href link to find element
+        elif "no href" not in element_href:
+            print("Output locate element method: href: ", element_href)
+            element_href = element_href.replace(" ", "")
+            element_xpath = f"//*[@href='{element_href}']"
+            self.wait.until(EC.presence_of_element_located((By.XPATH, element_xpath)))
+            element_locator = self.driver.find_element(By.XPATH, element_xpath)
+            return element_locator
+
+        # Use class name to find element
+        elif "no class" not in element_class:
+            self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, element_class)))
+            element_locator = self.driver.find_element(By.CLASS_NAME, element_class)
+            print("Output locate element method: class:", element_locator)
+            return element_locator
+
+        # Use text/label to find element
+        else:
+            print("Trying locator by text")
+            xpath_expr = f"//*[contains(text(), {element_label})]"
+            self.wait.until(EC.presence_of_element_located((By.XPATH, xpath_expr)))
+            element_locator = self.driver.find_element(By.XPATH, xpath_expr)
+            print("Output locate element method: text:", element_locator)
+            return element_locator
+
+    def interact_with_element(self, interaction_type, field_input, element_locator):
+        # Redo last action
+        if "Go back" in interaction_type:
+            self.driver.back()
+
+        # Click button or link
+        elif "Click" in interaction_type or "Open Drop Down" in interaction_type or "Radio Button" in interaction_type:
+            print("Before clicking element")
+            element_locator.click()
+            print("Click Element successful")
+
+        # Open Drop Down Menu
+        elif "Hover Over" in interaction_type:
+            print("Before hovering over element")
+            ActionChains(self.driver).move_to_element(element_locator).perform()
+            print("Hover Over Element successful")
+
+        # Choose from Drop Down Menu
+        elif "Input Field" in interaction_type:
+            input_text = field_input.lstrip()
+            print("Before text input")
+            ActionChains(self.driver).send_keys_to_element(element_locator, input_text).perform()
+            print("Input Field successful")
+
+        # Deleting input text
+        elif "Delete Text Input" in interaction_type:
+            element_locator.clear()
+
+        else:
+            print("No Interaction Type found, check output of GPTInteraction")
+
+    def interaction_choice_llm(self):
+        # First LLM
+        current_screenshot = self.get_latest_screenshot()
+        base64_image = self.encode_image(current_screenshot)
+        print("Screenshot: ", current_screenshot)
+        llm_output = self.gpt_interaction.chat_completion(self.usability_task, base64_image).choices[0].message.content
+        print("Output GPTInteraction: ")
+        print(llm_output)
+        return llm_output.split(";")
+
+    def get_element_locator_from_llm(self, current_html_code, last_gpt_interaction):
+        # Second LLM
+        element_information = self.gpt_findelement.chat_completion(current_html_code, last_gpt_interaction).choices[0].message.content
+        print("Output GPTFindElement: ")
+        print(element_information)
+        element_information = element_information.replace("", '')
+        return element_information.split(";")
+
+    def take_screenshot(self, counter):
+        current_date = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        self.driver.get_full_page_screenshot_as_png()
+        self.driver.save_full_page_screenshot(f'Screenshots/{str(counter)}_{str(current_date)}.png')
+
+    def get_latest_screenshot(self):
+        dir_list = sorted(os.listdir('Screenshots/'), key=lambda x: x[0])
+        return f'Screenshots/{dir_list[-1]}'
+
+    def encode_image(self, image):
+        with open(image, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode("utf-8")
+
+    def write_choices_to_file(self, interaction_options, interaction_explanation, interaction_type, interaction_label, element_description, field_input, iteration_observation, iteration, task_status):
+        # For documentation purposes
+        with open("Documentation.json", "a") as file:
+            data = {
+                "Iteration" + str(iteration): str(iteration),
+                "InteractionOptions" + str(iteration): interaction_options,
+                "InteractionExplanation" + str(iteration): interaction_explanation,
+                "InteractionType" + str(iteration): interaction_type,
+                "InteractionLabel" + str(iteration): interaction_label,
+                "ElementDescription" + str(iteration): element_description,
+                "FieldInput" + str(iteration): field_input,
+                "IterationObservation" + str(iteration): iteration_observation,
+                "TaskStatus" + str(iteration): task_status
+            }
+            json.dump(data, file, ensure_ascii=False, indent=4)
+
+    def write_found_elements_to_file(self, iteration, element_type, element_label, element_tag, element_id, element_css, element_href, element_class, element):
+        with open("FindElement_Documentation.json", "a") as file:
+            data = {
+                "Iteration": str(iteration),
+                "Type": element_type,
+                "Label": element_label,
+                "HTML Tag": element_tag,
+                "Id": element_id,
+                "CSS": element_css,
+                "Href": element_href,
+                "Class": element_class,
+                "Element": element
+            }
+            json.dump(data, file, indent=2)
+
+if __name__ == "__main__":
+    # Load environment variables
+    load_dotenv()
+    # Run TestRunner
+    runner = TestRunner()
+
+    start_url = ""
+    usability_task = f""
+
+    runner.main(start_url=start_url, task=usability_task)
