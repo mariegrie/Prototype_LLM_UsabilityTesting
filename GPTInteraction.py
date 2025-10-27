@@ -2,7 +2,6 @@ from dotenv import load_dotenv
 import os
 from openai import AzureOpenAI
 from PIL import Image
-import tiktoken
 
 
 class GPTInteraction:
@@ -138,23 +137,9 @@ class GPTInteraction:
             messages=messages,
         )
 
-        # Tokens for Prompting (differs from chat completion output)
-        self.count_tokens = [system_msg, task_msg, *history]
         return chat_completion
 
-    # Resize Image to reduce input tokens
-    def resize_image(self, image):
-        with Image.open(image) as img:
-            img.thumbnail((2048, 4096))
-            img.save("browser/screenshot/resized_img.png")
-            return img
 
-    def number_tokens(self, messages, model="gpt-4-turbo"):
-        encoding = tiktoken.encoding_for_model(model)
-        str_messages = str(messages)
-        encoded_message = encoding.encode(str_messages)
-        num_tokens = len(encoded_message)
-        return num_tokens
 
 
     def save_history(self, interaction_type, interaction_label, element_description, field_input):
